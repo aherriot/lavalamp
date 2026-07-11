@@ -88,12 +88,14 @@ async function main() {
     ],
   });
 
-  // fs_main doesn't read the storage buffer yet (Steps 10-11 are pure
-  // camera/raymarching work), so its auto-inferred layout only expects
-  // the uniform buffer. It gets reconnected in Step 12-13.
+  // fs_main reads blob positions from the same storage buffer the
+  // compute shader writes, reconnected as of Step 13.
   const renderBindGroup = device.createBindGroup({
     layout: renderPipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: blobBuffer } },
+    ],
   });
 
   const uniformData = new Float32Array(6);

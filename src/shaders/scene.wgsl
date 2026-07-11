@@ -1,5 +1,4 @@
 const PHYSICS_BLOB_COUNT = 3u;
-const TOTAL_BLOB_COUNT = 4u;
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -67,8 +66,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
   // further a blob drifts from the middle, the harder it's pulled
   // back -- so blobs settle into hovering near center instead of
   // drifting to a wall and waiting to bounce off it.
-  let restoreStrength = 0.6;
-  let heatStrength = 0.5;
+  let restoreStrength = 0.4;
+  let heatStrength = 0.6;
   var ay = (0.0 - b.pos.y) * restoreStrength + heat * heatStrength;
   var ax = 0.0;
 
@@ -101,7 +100,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Keep blobs inside a rough container, losing a bit of energy on bounce.
   let boundX = 0.42;
-  let boundY = 0.42;
+  let boundY = 1.0;
   if (abs(b.pos.x) > boundX) {
     b.pos.x = clamp(b.pos.x, -boundX, boundX);
     b.vel.x *= -0.4;
@@ -114,9 +113,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
   blobsRW[i] = b;
 }
 
-// ---- Render stage. Steps 10-11 build up 3D camera + raymarching from
-// scratch; the compute-simulated blobs above get reconnected in
-// Step 12-13 once we have a 3D metaball scene to feed them into. ----
+// ---- Render stage. Steps 10-11 built up 3D camera + raymarching from
+// scratch; Step 13 reconnects the compute-simulated blobs above. ----
+
+@group(0) @binding(1) var<storage, read> blobsRO: array<Blob>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -149,22 +149,22 @@ fn smin(a: f32, b: f32, k: f32) -> f32 {
   return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// Three spheres gently bobbing (time-driven, same as Step 6's early
-// sin/cos motion before real physics existed) blended into one blob
-// cluster. Step 13 swaps this out for the GPU-simulated positions from
-// the compute shader.
+// The three blobs' X/Y positions now come straight from the compute
+// shader's storage buffer -- the exact same buoyancy/repulsion
+// simulation from Step 9, just read into a 3D scene instead of a 2D
+// one. The simulation itself is still only 2D (it never touches a Z
+// axis), so each blob gets a fixed Z offset here purely to spread
+// them out in depth; X and Y are simulated, Z is not.
 fn sceneSDF(p: vec3f) -> f32 {
-  var positions = array<vec3f, 3>(
-    vec3f(-0.6, sin(params.time * 0.9) * 0.4, 0.0),
-    vec3f(0.6, sin(params.time * 1.3 + 2.0) * 0.4, 0.3),
-    vec3f(0.0, sin(params.time * 0.7 + 4.0) * 0.4, -0.5),
-  );
-  var radii = array<f32, 3>(0.6, 0.5, 0.55);
+  var zOffsets = array<f32, 3>(0.0, 0.35, -0.5);
+  var radii = array<f32, 3>(0.4, 0.3, 0.35);
 
   let k = 0.4;
   var d = 1e5;
-  for (var i = 0; i < 3; i++) {
-    let bd = sdSphere(p - positions[i], radii[i]);
+  for (var i = 0u; i < PHYSICS_BLOB_COUNT; i++) {
+    let simPos = blobsRO[i].pos;
+    let blobPos = vec3f(simPos.x, simPos.y, zOffsets[i]);
+    let bd = sdSphere(p - blobPos, radii[i]);
     d = smin(d, bd, k);
   }
   return d;

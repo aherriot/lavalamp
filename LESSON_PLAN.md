@@ -85,7 +85,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* extending the Phase 2 blending trick into 3D scene
   composition.
 
-- [ ] **13. Simulation meets renderer** — the compute-shader physics from
+- [x] **13. Simulation meets renderer** — the compute-shader physics from
   Phase 3 now drives real 3D blob positions.
   *Teaches:* wiring a full simulate → raymarch pipeline, the core loop of
   the finished demo.
