@@ -1,4 +1,5 @@
 const PHYSICS_BLOB_COUNT = 3u;
+const LIGHT_POS = vec3f(2.0, 3.0, 2.0);
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -206,6 +207,84 @@ fn raymarch(ro: vec3f, rd: vec3f) -> f32 {
   return -1.0; // no surface found within range: a miss
 }
 
+// The wax's full ambient + diffuse + specular + rim shading from
+// Step 14, now a standalone function so both "hit wax directly" and
+// "hit wax seen through the glass" can share it.
+fn shadeWax(hitPoint: vec3f, camPos: vec3f) -> vec3f {
+  let normal = estimateNormal(hitPoint);
+
+  let lightDir = normalize(LIGHT_POS - hitPoint);
+  let viewDir = normalize(camPos - hitPoint);
+
+  let diffuse = max(dot(normal, lightDir), 0.0);
+
+  let halfVec = normalize(lightDir + viewDir);
+  let shininess = 100.0;
+  let specular = pow(max(dot(normal, halfVec), 0.0), shininess);
+
+  let rimAmount = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
+
+  let ambient = 0.1;
+  let baseColor = vec3f(1.0, 0.35, 0.2);
+  let lightColor = vec3f(1.0, 0.95, 0.85);
+  let rimColor = vec3f(1.0, 0.5, 0.3);
+
+  var color = baseColor * (ambient + diffuse * 0.9);
+  color += lightColor * specular * 0.6;
+  color += rimColor * rimAmount * 0.4;
+  return color;
+}
+
+// A simple vertical sky gradient instead of flat black, so there's
+// still something to look at, and something for the glass to reflect.
+fn skyColor(rd: vec3f) -> vec3f {
+  let skyT = rd.y * 0.5 + 0.5;
+  return mix(vec3f(0.05, 0.05, 0.1), vec3f(0.25, 0.28, 0.4), skyT);
+}
+
+// Signed distance to a capsule (a cylinder with hemisphere caps): the
+// lamp's glass body. `a`/`b` are the two endpoints of the cylinder's
+// central axis, `r` is its radius.
+fn sdCapsule(p: vec3f, a: vec3f, b: vec3f, r: f32) -> f32 {
+  let pa = p - a;
+  let ba = b - a;
+  let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h) - r;
+}
+
+fn sdGlass(p: vec3f) -> f32 {
+  return sdCapsule(p, vec3f(0.0, -1.3, 0.0), vec3f(0.0, 1.3, 0.0), 0.95);
+}
+
+fn estimateGlassNormal(p: vec3f) -> vec3f {
+  let e = 0.001;
+  return normalize(vec3f(
+    sdGlass(p + vec3f(e, 0.0, 0.0)) - sdGlass(p - vec3f(e, 0.0, 0.0)),
+    sdGlass(p + vec3f(0.0, e, 0.0)) - sdGlass(p - vec3f(0.0, e, 0.0)),
+    sdGlass(p + vec3f(0.0, 0.0, e)) - sdGlass(p - vec3f(0.0, 0.0, e)),
+  ));
+}
+
+// A second, separate sphere-tracing loop against sdGlass instead of
+// sceneSDF. WGSL has no function pointers, so rather than making
+// raymarch generic, the glass gets its own small copy -- a bit of
+// duplication in exchange for staying simple to read.
+fn raymarchGlass(ro: vec3f, rd: vec3f) -> f32 {
+  var t = 0.0;
+  for (var i = 0; i < 100; i++) {
+    let p = ro + rd * t;
+    let d = sdGlass(p);
+    if (d < 0.001) {
+      return t;
+    }
+    t += d;
+    if (t > 50.0) {
+      break;
+    }
+  }
+  return -1.0;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = params.resolution.x / params.resolution.y;
@@ -221,7 +300,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // directions are really 3D perspective and not some flat reskin,
   // the resulting image will visibly rotate in a way a 2D effect
   // couldn't fake.
-  let camDist = 3.0;
+  let camDist = 6.0;
   let camPos = vec3f(
     sin(params.time * 0.3) * camDist,
     1.0,
@@ -246,56 +325,61 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     forward + screen.x * tanHalfFov * right + screen.y * tanHalfFov * up,
   );
 
-  let t = raymarch(camPos, rayDir);
-
-  if (t < 0.0) {
-    // Miss: a simple vertical sky gradient instead of flat black, so
-    // there's still something to look at around the sphere.
-    let skyT = rayDir.y * 0.5 + 0.5;
-    let sky = mix(vec3f(0.02, 0.02, 0.05), vec3f(0.1, 0.12, 0.2), skyT);
-    return vec4f(sky, 1.0);
+  // The glass fully encloses the wax, so a ray that reaches any wax
+  // always reaches the glass shell first -- meaning tGlass, if it
+  // hits, is always the correct "first surface" for this pixel.
+  let tGlass = raymarchGlass(camPos, rayDir);
+  if (tGlass < 0.0) {
+    return vec4f(skyColor(rayDir), 1.0);
   }
 
-  let hitPoint = camPos + rayDir * t;
-  let normal = estimateNormal(hitPoint);
+  // "Fake" refraction: rather than actually bending the ray at the
+  // glass surface (which would mean marching a second ray from inside
+  // the glass, at real cost), just reuse the *undisturbed* ray's wax
+  // hit. It's not physically correct refraction, but for a thin-ish
+  // glass shell the visual difference is minor, and it's essentially
+  // free since raymarch() was going to run anyway.
+  let tBlob = raymarch(camPos, rayDir);
+  var innerColor: vec3f;
+  if (tBlob >= 0.0) {
+    innerColor = shadeWax(camPos + rayDir * tBlob, camPos);
+  } else {
+    // No wax along this ray: a warm, dim liquid color instead of a
+    // hard edge where the glass would otherwise show empty space.
+    innerColor = vec3f(0.22, 0.07, 0.05);
+  }
 
-  let lightPos = vec3f(2.0, 3.0, 2.0);
-  let lightDir = normalize(lightPos - hitPoint);
-  let viewDir = normalize(camPos - hitPoint);
+  let glassPoint = camPos + rayDir * tGlass;
+  let glassNormal = estimateGlassNormal(glassPoint);
+  let viewDir = normalize(camPos - glassPoint);
 
-  // Diffuse (Lambertian): brightness proportional to how directly the
-  // surface faces the light. dot(normal, lightDir) is 1.0 head-on, 0
-  // at a glancing angle, negative facing away -- clamped to 0 so it
-  // never goes "negative bright".
-  let diffuse = max(dot(normal, lightDir), 0.0);
+  // Fresnel (Schlick's approximation): real glass reflects more and
+  // transmits less the more glancing the viewing angle is -- almost a
+  // mirror at grazing angles. F0 is the reflectance straight-on
+  // (head-on incidence): real glass reflects roughly 4% of light even
+  // when viewed dead-on, which is what made the capsule read as a
+  // flat, opaque color before -- with no baseline reflectivity, the
+  // "glass" contributed nothing when looking straight through it.
+  let cosTheta = max(dot(glassNormal, viewDir), 0.0);
+  let F0 = 0.04;
+  let fresnel = F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 
-  // Specular (Blinn-Phong): a bright highlight where the surface is
-  // angled to bounce the light straight at the camera. Rather than
-  // computing the true reflection vector, Blinn-Phong compares the
-  // normal to the "halfway vector" between light and view directions
-  // -- cheaper, and close enough that it's the standard approximation.
-  // Raising to a high power (shininess) squeezes the bright region
-  // down to a tight highlight instead of a broad glow.
-  let halfVec = normalize(lightDir + viewDir);
-  let shininess = 100.0;
-  let specular = pow(max(dot(normal, halfVec), 0.0), shininess);
+  let reflectDir = reflect(-viewDir, glassNormal);
+  let reflectionColor = skyColor(reflectDir);
 
-  // Rim light: brightens edges that face *away* from the camera --
-  // the opposite condition from specular. This fakes the way real
-  // translucent wax glows brightest at its silhouette, backlit by
-  // light scattering through it, and is a cheap trick for making
-  // rounded shapes read as soft/glowing rather than hard plastic.
-  // let rimAmount = 0.0;
-  let rimAmount = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
+  let glassTint = vec3f(0.85, 0.95, 0.9);
+  let refractedColor = innerColor * glassTint;
 
-  let ambient = 0.1;
-  let baseColor = vec3f(1.0, 0.35, 0.2);
-  let lightColor = vec3f(1.0, 0.95, 0.85);
-  let rimColor = vec3f(1.0, 0.5, 0.3);
+  var finalColor = mix(refractedColor, reflectionColor, fresnel);
 
-  var color = baseColor * (ambient + diffuse * 0.9);
-  color += lightColor * specular * 0.6;
-  color += rimColor * rimAmount * 0.4;
-
-  return vec4f(color, 1.0);
+  // A direct specular glint from the light source hitting the glass
+  // surface itself -- the sky reflection alone never picks this up,
+  // since the light is a point light, not part of the sky. This bright,
+  // tight highlight is often the single strongest cue that a surface
+  // is "glassy/wet" rather than a flat colored material.
+  let glassLightDir = normalize(LIGHT_POS - glassPoint);
+  let glassHalfVec = normalize(glassLightDir + viewDir);
+  let glassSpecular = pow(max(dot(glassNormal, glassHalfVec), 0.0), 200.0);
+  finalColor += vec3f(1.0) * glassSpecular;
+  return vec4f(finalColor, 1.0);
 }

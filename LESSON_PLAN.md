@@ -96,7 +96,7 @@ glass container, with lighting, refraction, and glow.
   plus a rim light for that glowing look.
   *Teaches:* standard lighting model, material parameters.
 
-- [ ] **15. The glass lamp** — add a capsule/cylinder SDF container, boolean
+- [x] **15. The glass lamp** — add a capsule/cylinder SDF container, boolean
   ops (union/subtract), fake refraction & fresnel at the glass surface.
   *Teaches:* SDF booleans, cheap-but-convincing refraction/reflection
   tricks.
