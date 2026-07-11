@@ -75,7 +75,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* how raymarched renderers do "projection" without a traditional
   vertex pipeline.
 
-- [ ] **11. Raymarching one sphere** — sphere-trace an SDF sphere, shade it
+- [x] **11. Raymarching one sphere** — sphere-trace an SDF sphere, shade it
   with one light.
   *Teaches:* the raymarching algorithm itself, computing normals from the
   SDF gradient, basic Lambertian shading.

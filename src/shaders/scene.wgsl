@@ -132,6 +132,55 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
+// Signed distance to a sphere: the 3D counterpart of Step 5's
+// sdCircle, same idea -- negative inside, zero on the surface,
+// positive outside.
+fn sdSphere(p: vec3f, radius: f32) -> f32 {
+  return length(p) - radius;
+}
+
+// The scene is just one sphere at the origin for now; Step 12 turns
+// this into several spheres blended with smin, same as the 2D version.
+fn sceneSDF(p: vec3f) -> f32 {
+  return sdSphere(p, 1.0);
+}
+
+// Surface normal via the SDF's gradient: nudge p a tiny amount along
+// each axis and see how much the distance changes. The direction of
+// steepest increase in distance points straight out of the surface --
+// exactly the normal. This works for *any* SDF, however complex,
+// without needing per-shape normal formulas.
+fn estimateNormal(p: vec3f) -> vec3f {
+  let e = 0.001;
+  return normalize(vec3f(
+    sceneSDF(p + vec3f(e, 0.0, 0.0)) - sceneSDF(p - vec3f(e, 0.0, 0.0)),
+    sceneSDF(p + vec3f(0.0, e, 0.0)) - sceneSDF(p - vec3f(0.0, e, 0.0)),
+    sceneSDF(p + vec3f(0.0, 0.0, e)) - sceneSDF(p - vec3f(0.0, 0.0, e)),
+  ));
+}
+
+// Sphere tracing: walk along the ray in steps sized by the SDF's own
+// output. Since sceneSDF(p) is the distance to the *nearest* surface
+// in any direction, it's always safe to advance the ray by exactly
+// that much without risk of stepping through a surface. Near a
+// surface the steps shrink automatically; far away they leap ahead --
+// no fixed step size needed.
+fn raymarch(ro: vec3f, rd: vec3f) -> f32 {
+  var t = 0.0;
+  for (var i = 0; i < 100; i++) {
+    let p = ro + rd * t;
+    let d = sceneSDF(p);
+    if (d < 0.001) {
+      return t;
+    }
+    t += d;
+    if (t > 50.0) {
+      break;
+    }
+  }
+  return -1.0; // no surface found within range: a miss
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = params.resolution.x / params.resolution.y;
@@ -172,11 +221,30 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     forward + screen.x * tanHalfFov * right + screen.y * tanHalfFov * up,
   );
 
-  // No scene to raymarch yet -- visualize the ray direction itself as
-  // color. Each component of a normalized direction is in -1..1, so
-  // *0.5+0.5 remaps it into a viewable 0..1 RGB range. This is a
-  // standard way to sanity-check camera code before there's anything
-  // to actually render with it.
-  let color = rayDir * 0.5 + 0.5;
+  let t = raymarch(camPos, rayDir);
+
+  if (t < 0.0) {
+    // Miss: a simple vertical sky gradient instead of flat black, so
+    // there's still something to look at around the sphere.
+    let skyT = rayDir.y * 0.5 + 0.5;
+    let sky = mix(vec3f(0.02, 0.02, 0.05), vec3f(0.1, 0.12, 0.2), skyT);
+    return vec4f(sky, 1.0);
+  }
+
+  let hitPoint = camPos + rayDir * t;
+  let normal = estimateNormal(hitPoint);
+
+  // Basic Lambertian shading: brightness proportional to how directly
+  // the surface faces the light. dot(normal, lightDir) is 1.0 when
+  // facing the light head-on, 0 at a glancing angle, negative when
+  // facing away -- clamped to 0 so it never goes "negative bright".
+  let lightPos = vec3f(2.0, 3.0, 2.0);
+  let lightDir = normalize(lightPos - hitPoint);
+  let diffuse = max(dot(normal, lightDir), 0.0);
+
+  let ambient = 0.1;
+  let baseColor = vec3f(1.0, 0.35, 0.2);
+  let color = baseColor * (ambient + diffuse * 0.9);
+
   return vec4f(color, 1.0);
 }
