@@ -259,17 +259,43 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let hitPoint = camPos + rayDir * t;
   let normal = estimateNormal(hitPoint);
 
-  // Basic Lambertian shading: brightness proportional to how directly
-  // the surface faces the light. dot(normal, lightDir) is 1.0 when
-  // facing the light head-on, 0 at a glancing angle, negative when
-  // facing away -- clamped to 0 so it never goes "negative bright".
   let lightPos = vec3f(2.0, 3.0, 2.0);
   let lightDir = normalize(lightPos - hitPoint);
+  let viewDir = normalize(camPos - hitPoint);
+
+  // Diffuse (Lambertian): brightness proportional to how directly the
+  // surface faces the light. dot(normal, lightDir) is 1.0 head-on, 0
+  // at a glancing angle, negative facing away -- clamped to 0 so it
+  // never goes "negative bright".
   let diffuse = max(dot(normal, lightDir), 0.0);
+
+  // Specular (Blinn-Phong): a bright highlight where the surface is
+  // angled to bounce the light straight at the camera. Rather than
+  // computing the true reflection vector, Blinn-Phong compares the
+  // normal to the "halfway vector" between light and view directions
+  // -- cheaper, and close enough that it's the standard approximation.
+  // Raising to a high power (shininess) squeezes the bright region
+  // down to a tight highlight instead of a broad glow.
+  let halfVec = normalize(lightDir + viewDir);
+  let shininess = 100.0;
+  let specular = pow(max(dot(normal, halfVec), 0.0), shininess);
+
+  // Rim light: brightens edges that face *away* from the camera --
+  // the opposite condition from specular. This fakes the way real
+  // translucent wax glows brightest at its silhouette, backlit by
+  // light scattering through it, and is a cheap trick for making
+  // rounded shapes read as soft/glowing rather than hard plastic.
+  // let rimAmount = 0.0;
+  let rimAmount = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
 
   let ambient = 0.1;
   let baseColor = vec3f(1.0, 0.35, 0.2);
-  let color = baseColor * (ambient + diffuse * 0.9);
+  let lightColor = vec3f(1.0, 0.95, 0.85);
+  let rimColor = vec3f(1.0, 0.5, 0.3);
+
+  var color = baseColor * (ambient + diffuse * 0.9);
+  color += lightColor * specular * 0.6;
+  color += rimColor * rimAmount * 0.4;
 
   return vec4f(color, 1.0);
 }

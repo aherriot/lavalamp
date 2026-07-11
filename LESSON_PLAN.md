@@ -92,7 +92,7 @@ glass container, with lighting, refraction, and glow.
 
 ## Phase 5 — Look & feel
 
-- [ ] **14. Real lighting** — ambient + diffuse + specular (Blinn-Phong),
+- [x] **14. Real lighting** — ambient + diffuse + specular (Blinn-Phong),
   plus a rim light for that glowing look.
   *Teaches:* standard lighting model, material parameters.
 
