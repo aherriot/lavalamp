@@ -31,7 +31,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* uniform buffers, bind groups/layouts, the animation loop, time
   as GPU input.
 
-- [ ] **4. The fullscreen quad trick** — render a single triangle that
+- [x] **4. The fullscreen quad trick** — render a single triangle that
   covers the screen, treat the fragment shader as a per-pixel program.
   *Teaches:* this is the technique the entire rest of the project is built
   on — once you have this, "rendering" becomes "writing a function of pixel
