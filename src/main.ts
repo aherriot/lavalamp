@@ -1,17 +1,18 @@
 import "./style.css";
 import { initWebGPU } from "./webgpu";
-import fullscreenShader from "./shaders/fullscreen.wgsl?raw";
+import sceneShader from "./shaders/scene.wgsl?raw";
 
 async function main() {
   const canvas = document.getElementById("gpu-canvas") as HTMLCanvasElement;
   const { device, context, format } = await initWebGPU(canvas);
 
-  const shaderModule = device.createShaderModule({ code: fullscreenShader });
+  const shaderModule = device.createShaderModule({ code: sceneShader });
 
-  // layout: time: f32 (offset 0), mouse: vec2f (offset 8, per WGSL's
-  // 8-byte alignment for vec2f) -> 16 bytes total.
+  // layout: time: f32 (offset 0), mouse: vec2f (offset 8), resolution:
+  // vec2f (offset 16) -> 24 bytes total. Each vec2f must start on an
+  // 8-byte boundary per WGSL's uniform alignment rules.
   const uniformBuffer = device.createBuffer({
-    size: 16,
+    size: 24,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -48,7 +49,14 @@ async function main() {
     device.queue.writeBuffer(
       uniformBuffer,
       0,
-      new Float32Array([t, 0, mouseNDC.x, mouseNDC.y]),
+      new Float32Array([
+        t,
+        0,
+        mouseNDC.x,
+        mouseNDC.y,
+        canvas.width,
+        canvas.height,
+      ]),
     );
 
     const encoder = device.createCommandEncoder();

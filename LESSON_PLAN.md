@@ -39,7 +39,7 @@ glass container, with lighting, refraction, and glow.
 
 ## Phase 2 — SDFs & metaballs (2D warm-up)
 
-- [ ] **5. A circle from math** — draw a circle using a signed distance
+- [x] **5. A circle from math** — draw a circle using a signed distance
   function inside the fragment shader.
   *Teaches:* what an SDF is, `smoothstep` antialiasing without any geometry
   at all.
