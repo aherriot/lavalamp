@@ -63,7 +63,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* compute pipelines, workgroups, storage buffers, the compute →
   render handoff (GPU talking to itself).
 
-- [ ] **9. Heat-driven motion** — a simulated noise field drives buoyancy,
+- [x] **9. Heat-driven motion** — a simulated noise field drives buoyancy,
   blobs mildly repel each other.
   *Teaches:* noise functions in WGSL (value/Perlin-ish), lightweight
   N-body-style interaction.
