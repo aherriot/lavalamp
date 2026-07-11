@@ -70,7 +70,7 @@ glass container, with lighting, refraction, and glow.
 
 ## Phase 4 — Into 3D
 
-- [ ] **10. Rays instead of matrices** — generate a camera ray per pixel
+- [x] **10. Rays instead of matrices** — generate a camera ray per pixel
   from position/look-direction/FOV.
   *Teaches:* how raymarched renderers do "projection" without a traditional
   vertex pipeline.

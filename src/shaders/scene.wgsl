@@ -114,10 +114,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
   blobsRW[i] = b;
 }
 
-// ---- Render stage: unchanged conceptually from Step 7, just reads
-// blob positions from the storage buffer instead of a uniform array. ----
-
-@group(0) @binding(1) var<storage, read> blobsRO: array<Blob>;
+// ---- Render stage. Steps 10-11 build up 3D camera + raymarching from
+// scratch; the compute-simulated blobs above get reconnected in
+// Step 12-13 once we have a 3D metaball scene to feed them into. ----
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
@@ -133,58 +132,51 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// Signed distance to a circle: negative inside, zero on the edge,
-// positive outside. Any function with this shape -- negative inside,
-// zero at the boundary, positive outside -- is a "signed distance field".
-fn sdCircle(p: vec2f, radius: f32) -> f32 {
-  return length(p) - radius;
-}
-
-// Smooth minimum: like min(a, b), but blends smoothly between the two
-// instead of switching abruptly, with k controlling the blend radius.
-// Applied to two SDFs, this is what makes two separate shapes visually
-// merge into one wherever they get close -- the core "metaball" trick.
-fn smin(a: f32, b: f32, k: f32) -> f32 {
-  let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-  return mix(b, a, h) - k * h * (1.0 - h);
-}
-
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = params.resolution.x / params.resolution.y;
 
-  // Center the coordinate space at (0,0) and correct for aspect ratio
-  // so circles aren't stretched into ellipses on non-square canvases.
-  var p = in.uv - vec2f(0.5, 0.5);
-  p.x *= aspect;
+  // Centered, aspect-corrected screen coordinate in roughly -1..1 --
+  // same idea as Step 5's `p`, just feeding a 3D camera instead of an
+  // SDF directly.
+  var screen = in.uv * 2.0 - 1.0;
+  screen.x *= aspect;
 
-  var radii = array<f32, TOTAL_BLOB_COUNT>(0.15, 0.12, 0.18, 0.15);
+  // A slowly orbiting camera looking at the origin. Orbiting (rather
+  // than a fixed camera) is a deliberate sanity check: if the ray
+  // directions are really 3D perspective and not some flat reskin,
+  // the resulting image will visibly rotate in a way a 2D effect
+  // couldn't fake.
+  let camDist = 3.0;
+  let camPos = vec3f(
+    sin(params.time * 0.3) * camDist,
+    1.0,
+    cos(params.time * 0.3) * camDist,
+  );
+  let lookTarget = vec3f(0.0, 0.0, 0.0);
+  let worldUp = vec3f(0.0, 1.0, 0.0);
 
-  let k = 0.15;
-  var d = 1e5;
-  for (var i = 0u; i < PHYSICS_BLOB_COUNT; i++) {
-    var bp = blobsRO[i].pos;
-    bp.x *= aspect;
-    let bd = sdCircle(p - bp, radii[i]);
-    d = smin(d, bd, k);
-  }
+  // Camera basis: three mutually perpendicular directions describing
+  // the camera's orientation, built purely from where it is and what
+  // it's looking at -- this replaces a traditional view matrix.
+  let forward = normalize(lookTarget - camPos);
+  let right = normalize(cross(forward, worldUp));
+  let up = cross(right, forward);
 
-  // The mouse-tracked blob isn't simulated state -- it's live input --
-  // so it stays a plain uniform rather than living in the storage buffer.
-  var mouseP = params.mouse * 0.5;
-  mouseP.x *= aspect;
-  let mouseD = sdCircle(p - mouseP, radii[TOTAL_BLOB_COUNT - 1u]);
-  d = smin(d, mouseD, k);
+  // Field of view controls how much the screen's -1..1 extent spreads
+  // the ray directions apart; a wider fov = a more "fisheye" spread.
+  let fovRadians = radians(60.0);
+  let tanHalfFov = tan(fovRadians * 0.5);
 
-  // Antialiasing via fwidth: it estimates how much `d` changes between
-  // neighboring pixels, so the edge stays exactly ~1 pixel wide no
-  // matter the screen resolution or how steeply d varies.
-  let edge = fwidth(d);
-  let coverage = 1.0 - smoothstep(-edge, edge, d);
+  let rayDir = normalize(
+    forward + screen.x * tanHalfFov * right + screen.y * tanHalfFov * up,
+  );
 
-  let background = vec3f(0.05, 0.05, 0.08);
-  let blobColor = vec3f(1.0, 0.35 + 0.3 * sin(params.time), 0.2);
-
-  let color = mix(background, blobColor, coverage);
+  // No scene to raymarch yet -- visualize the ray direction itself as
+  // color. Each component of a normalized direction is in -1..1, so
+  // *0.5+0.5 remaps it into a viewable 0..1 RGB range. This is a
+  // standard way to sanity-check camera code before there's anything
+  // to actually render with it.
+  let color = rayDir * 0.5 + 0.5;
   return vec4f(color, 1.0);
 }

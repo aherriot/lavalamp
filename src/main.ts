@@ -88,12 +88,12 @@ async function main() {
     ],
   });
 
+  // fs_main doesn't read the storage buffer yet (Steps 10-11 are pure
+  // camera/raymarching work), so its auto-inferred layout only expects
+  // the uniform buffer. It gets reconnected in Step 12-13.
   const renderBindGroup = device.createBindGroup({
     layout: renderPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniformBuffer } },
-      { binding: 1, resource: { buffer: blobBuffer } },
-    ],
+    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
   });
 
   const uniformData = new Float32Array(6);
