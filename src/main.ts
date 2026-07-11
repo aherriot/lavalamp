@@ -1,29 +1,44 @@
 import './style.css';
 import { initWebGPU } from './webgpu';
+import triangleShader from './shaders/triangle.wgsl?raw';
 
 async function main() {
   const canvas = document.getElementById('gpu-canvas') as HTMLCanvasElement;
-  const { device, context } = await initWebGPU(canvas);
+  const { device, context, format } = await initWebGPU(canvas);
 
-  function frame(timeMs: number) {
-    const t = timeMs * 0.001;
+  const shaderModule = device.createShaderModule({ code: triangleShader });
 
+  const pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex: {
+      module: shaderModule,
+      entryPoint: 'vs_main',
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: 'fs_main',
+      targets: [{ format }],
+    },
+    primitive: {
+      topology: 'triangle-list',
+    },
+  });
+
+  function frame() {
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
           view: context.getCurrentTexture().createView(),
-          clearValue: {
-            r: 0.5 + 0.5 * Math.sin(t),
-            g: 0.1,
-            b: 0.5 + 0.5 * Math.cos(t),
-            a: 1,
-          },
+          clearValue: { r: 0.05, g: 0.05, b: 0.08, a: 1 },
           loadOp: 'clear',
           storeOp: 'store',
         },
       ],
     });
+
+    pass.setPipeline(pipeline);
+    pass.draw(3);
     pass.end();
 
     device.queue.submit([encoder.finish()]);

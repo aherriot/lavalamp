@@ -17,7 +17,7 @@ glass container, with lighting, refraction, and glow.
 
 ## Phase 1 — Rasterization fundamentals
 
-- [ ] **1. First triangle** — hardcoded vertices inside WGSL itself, no
+- [x] **1. First triangle** — hardcoded vertices inside WGSL itself, no
   buffers yet.
   *Teaches:* WGSL vertex/fragment shaders, pipelines, NDC space, what
   "rasterization" actually does.
