@@ -3,10 +3,16 @@ struct VertexOutput {
   @location(0) uv: vec2f,
 };
 
+const BLOB_COUNT = 3u;
+
 struct Uniforms {
   time: f32,
-  mouse: vec2f,
   resolution: vec2f,
+  // NOTE: arrays inside a uniform buffer must have an element stride
+  // that's a multiple of 16 bytes, even though a bare vec2f is only
+  // 8 bytes. WGSL pads each array entry to 16 bytes here -- the JS
+  // side has to match that padding by hand when writing the buffer.
+  blobPositions: array<vec2f, BLOB_COUNT>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -32,19 +38,36 @@ fn sdCircle(p: vec2f, radius: f32) -> f32 {
   return length(p) - radius;
 }
 
+// Smooth minimum: like min(a, b), but blends smoothly between the two
+// instead of switching abruptly, with k controlling the blend radius.
+// Applied to two SDFs, this is what makes two separate shapes visually
+// merge into one wherever they get close -- the core "metaball" trick.
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+  let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = uniforms.resolution.x / uniforms.resolution.y;
 
   // Center the coordinate space at (0,0) and correct for aspect ratio
-  // so the circle isn't stretched into an ellipse on non-square canvases.
+  // so circles aren't stretched into ellipses on non-square canvases.
   var p = in.uv - vec2f(0.5, 0.5);
   p.x *= aspect;
 
-  var mouseP = uniforms.mouse * 0.5;
-  mouseP.x *= aspect;
+  // Blob positions and radii now come from JS-side physics instead of
+  // sin/cos formulas baked into the shader.
+  var radii = array<f32, BLOB_COUNT>(0.15, 0.12, 0.18);
 
-  let d = sdCircle(p - mouseP, 0.2);
+  let k = 0.15;
+  var d = 1e5;
+  for (var i = 0u; i < BLOB_COUNT; i++) {
+    var bp = uniforms.blobPositions[i];
+    bp.x *= aspect;
+    let bd = sdCircle(p - bp, radii[i]);
+    d = smin(d, bd, k);
+  }
 
   // Antialiasing via fwidth: it estimates how much `d` changes between
   // neighboring pixels, so the edge stays exactly ~1 pixel wide no
@@ -53,8 +76,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let coverage = 1.0 - smoothstep(-edge, edge, d);
 
   let background = vec3f(0.05, 0.05, 0.08);
-  let circleColor = vec3f(1.0, 0.35 + 0.3 * sin(uniforms.time), 0.2);
+  let blobColor = vec3f(1.0, 0.35 + 0.3 * sin(uniforms.time), 0.2);
 
-  let color = mix(background, circleColor, coverage);
+  let color = mix(background, blobColor, coverage);
   return vec4f(color, 1.0);
 }

@@ -44,12 +44,12 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* what an SDF is, `smoothstep` antialiasing without any geometry
   at all.
 
-- [ ] **6. Blob merging** — several circles blended with a smooth-min
+- [x] **6. Blob merging** — several circles blended with a smooth-min
   function = classic 2D metaballs.
   *Teaches:* `smin`, blending functions — the exact trick that makes lava
   lamp blobs melt into each other later.
 
-- [ ] **7. Simple buoyancy** — blobs drift up/down with sine-wave wobble,
+- [x] **7. Simple buoyancy** — blobs drift up/down with sine-wave wobble,
   positions passed in via a uniform array.
   *Teaches:* passing arrays to shaders, basic physics integration
   (position/velocity).
