@@ -139,10 +139,35 @@ fn sdSphere(p: vec3f, radius: f32) -> f32 {
   return length(p) - radius;
 }
 
-// The scene is just one sphere at the origin for now; Step 12 turns
-// this into several spheres blended with smin, same as the 2D version.
+// Smooth minimum: identical to Step 6's 2D version -- smin operates
+// on plain scalar distances, so it doesn't care whether those
+// distances came from a 2D or 3D SDF. Blending multiple sdSphere
+// calls with this is exactly what makes them merge into lava blobs
+// instead of just overlapping.
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+  let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+  return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// Three spheres gently bobbing (time-driven, same as Step 6's early
+// sin/cos motion before real physics existed) blended into one blob
+// cluster. Step 13 swaps this out for the GPU-simulated positions from
+// the compute shader.
 fn sceneSDF(p: vec3f) -> f32 {
-  return sdSphere(p, 1.0);
+  var positions = array<vec3f, 3>(
+    vec3f(-0.6, sin(params.time * 0.9) * 0.4, 0.0),
+    vec3f(0.6, sin(params.time * 1.3 + 2.0) * 0.4, 0.3),
+    vec3f(0.0, sin(params.time * 0.7 + 4.0) * 0.4, -0.5),
+  );
+  var radii = array<f32, 3>(0.6, 0.5, 0.55);
+
+  let k = 0.4;
+  var d = 1e5;
+  for (var i = 0; i < 3; i++) {
+    let bd = sdSphere(p - positions[i], radii[i]);
+    d = smin(d, bd, k);
+  }
+  return d;
 }
 
 // Surface normal via the SDF's gradient: nudge p a tiny amount along

@@ -80,7 +80,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* the raymarching algorithm itself, computing normals from the
   SDF gradient, basic Lambertian shading.
 
-- [ ] **12. 3D metaballs** — multiple spheres + 3D smooth-min = actual lava
+- [x] **12. 3D metaballs** — multiple spheres + 3D smooth-min = actual lava
   blobs.
   *Teaches:* extending the Phase 2 blending trick into 3D scene
   composition.

@@ -32,15 +32,15 @@ async function main() {
     0,
     new Float32Array([
       -0.2,
-      0.1,
+      0.2,
       0,
       0, // blob 0: pos, vel
       0.15,
-      -0.15,
+      -0.95,
       0,
       0, // blob 1: pos, vel
       0.0,
-      -0.5,
+      -0.9,
       0,
       0, // blob 2: pos, vel
     ]),
