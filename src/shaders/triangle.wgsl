@@ -4,21 +4,13 @@ struct VertexOutput {
 };
 
 @vertex
-fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-  var positions = array<vec2f, 3>(
-    vec2f(0.0, 0.5),
-    vec2f(-0.5, -0.5),
-    vec2f(0.5, -0.5),
-  );
-  var colors = array<vec3f, 3>(
-    vec3f(1.0, 0.2, 0.2),
-    vec3f(0.2, 1.0, 0.2),
-    vec3f(0.2, 0.4, 1.0),
-  );
-
+fn vs_main(
+  @location(0) position: vec2f,
+  @location(1) color: vec3f,
+) -> VertexOutput {
   var out: VertexOutput;
-  out.position = vec4f(positions[vertexIndex], 0.0, 1.0);
-  out.color = colors[vertexIndex];
+  out.position = vec4f(position, 0.0, 1.0);
+  out.color = color;
   return out;
 }
 

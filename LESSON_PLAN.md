@@ -22,7 +22,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* WGSL vertex/fragment shaders, pipelines, NDC space, what
   "rasterization" actually does.
 
-- [ ] **2. Vertex buffers** — same triangle, now driven by CPU-side vertex
+- [x] **2. Vertex buffers** — same triangle, now driven by CPU-side vertex
   data (+ index buffer).
   *Teaches:* GPU buffers, vertex layouts, indexed drawing.
 
