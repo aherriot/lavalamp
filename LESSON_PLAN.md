@@ -26,7 +26,7 @@ glass container, with lighting, refraction, and glow.
   data (+ index buffer).
   *Teaches:* GPU buffers, vertex layouts, indexed drawing.
 
-- [ ] **3. Uniforms & animation** — rotate/move the shape every frame via a
+- [x] **3. Uniforms & animation** — rotate/move the shape every frame via a
   uniform buffer.
   *Teaches:* uniform buffers, bind groups/layouts, the animation loop, time
   as GPU input.
