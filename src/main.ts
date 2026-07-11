@@ -2,12 +2,7 @@ import "./style.css";
 import { initWebGPU } from "./webgpu";
 import sceneShader from "./shaders/scene.wgsl?raw";
 
-const BLOB_COUNT = 3;
-
-interface Blob {
-  pos: [number, number];
-  vel: [number, number];
-}
+const PHYSICS_BLOB_COUNT = 3;
 
 async function main() {
   const canvas = document.getElementById("gpu-canvas") as HTMLCanvasElement;
@@ -15,15 +10,41 @@ async function main() {
 
   const shaderModule = device.createShaderModule({ code: sceneShader });
 
-  // layout: time: f32 (offset 0), resolution: vec2f (offset 8),
-  // blobPositions: array<vec2f, 3> (offset 16, 16 bytes per element
-  // instead of 8 -- WGSL forces uniform-buffer array strides to be a
-  // multiple of 16 bytes, so each vec2f entry gets 8 bytes of padding).
-  // Total: 16 + 3 * 16 = 64 bytes.
+  // layout: time: f32 (0), dt: f32 (4), resolution: vec2f (8),
+  // mouse: vec2f (16) -> 24 bytes. No arrays here, so none of the
+  // uniform-array 16-byte-stride padding from Step 7 applies.
   const uniformBuffer = device.createBuffer({
-    size: 64,
+    size: 24,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
+
+  // Storage buffers don't have the uniform buffer's forced 16-byte
+  // array stride -- each Blob (pos: vec2f, vel: vec2f) packs tightly
+  // into 16 bytes, 4 floats, no padding required.
+  const blobBufferSize =
+    PHYSICS_BLOB_COUNT * 4 * Float32Array.BYTES_PER_ELEMENT;
+  const blobBuffer = device.createBuffer({
+    size: blobBufferSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(
+    blobBuffer,
+    0,
+    new Float32Array([
+      -0.2,
+      0.1,
+      0,
+      0, // blob 0: pos, vel
+      0.15,
+      -0.15,
+      0,
+      0, // blob 1: pos, vel
+      0.0,
+      -0.5,
+      0,
+      0, // blob 2: pos, vel
+    ]),
+  );
 
   const mouseNDC = { x: 0, y: 0 };
   canvas.addEventListener("pointermove", (event) => {
@@ -32,33 +53,15 @@ async function main() {
     mouseNDC.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
   });
 
-  // Two blobs driven by simple damped-spring "buoyancy": each is pulled
-  // toward a slowly oscillating target height, with damping so it
-  // settles into a smooth bob instead of oscillating forever.
-  const buoyantBlobs: Blob[] = [
-    { pos: [-0.2, 0.1], vel: [0, 0] },
-    { pos: [0.15, -0.15], vel: [0, 0] },
-  ];
+  const computePipeline = device.createComputePipeline({
+    layout: "auto",
+    compute: {
+      module: shaderModule,
+      entryPoint: "cs_main",
+    },
+  });
 
-  function stepPhysics(t: number, dt: number) {
-    for (let i = 0; i < buoyantBlobs.length; i++) {
-      const b = buoyantBlobs[i];
-      const springStrength = 1.5;
-      const damping = 0.8;
-
-      const targetY = Math.sin(t * (0.7 + i * 0.3) + i * 2.1) * 0.3;
-      const ay = (targetY - b.pos[1]) * springStrength - b.vel[1] * damping;
-      b.vel[1] += ay * dt;
-      b.pos[1] += b.vel[1] * dt;
-
-      const ax = Math.sin(t * (0.5 + i * 0.2) + i) * 0.1;
-      b.vel[0] += ax * dt;
-      b.vel[0] *= 0.98; // friction, otherwise horizontal drift accumulates forever
-      b.pos[0] += b.vel[0] * dt;
-    }
-  }
-
-  const pipeline = device.createRenderPipeline({
+  const renderPipeline = device.createRenderPipeline({
     layout: "auto",
     vertex: {
       module: shaderModule,
@@ -74,12 +77,26 @@ async function main() {
     },
   });
 
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+  // Two separate bind groups over the *same* buffers: the compute
+  // shader declares the storage buffer read_write, the fragment shader
+  // declares it read-only, so each pipeline needs its own layout.
+  const computeBindGroup = device.createBindGroup({
+    layout: computePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: blobBuffer } },
+    ],
   });
 
-  const uniformData = new Float32Array(16);
+  const renderBindGroup = device.createBindGroup({
+    layout: renderPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: uniformBuffer } },
+      { binding: 1, resource: { buffer: blobBuffer } },
+    ],
+  });
+
+  const uniformData = new Float32Array(6);
   let lastTimeMs = 0;
 
   function frame(timeMs: number) {
@@ -87,28 +104,23 @@ async function main() {
     const dt = Math.min((timeMs - lastTimeMs) * 0.001, 0.05);
     lastTimeMs = timeMs;
 
-    stepPhysics(t, dt);
-
-    // World space here matches the shader's `p`, which ranges roughly
-    // -0.5..0.5 (uv - 0.5), so the mouse blob is scaled down to match.
-    const blobPositions: [number, number][] = [
-      buoyantBlobs[0].pos,
-      buoyantBlobs[1].pos,
-      [mouseNDC.x * 0.5, mouseNDC.y * 0.5],
-    ];
-
     uniformData[0] = t;
+    uniformData[1] = dt;
     uniformData[2] = canvas.width;
     uniformData[3] = canvas.height;
-    for (let i = 0; i < BLOB_COUNT; i++) {
-      const base = 4 + i * 4; // 4 floats (16 bytes) per array element
-      uniformData[base] = blobPositions[i][0];
-      uniformData[base + 1] = blobPositions[i][1];
-    }
+    uniformData[4] = mouseNDC.x;
+    uniformData[5] = mouseNDC.y;
     device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
     const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
+
+    const computePass = encoder.beginComputePass();
+    computePass.setPipeline(computePipeline);
+    computePass.setBindGroup(0, computeBindGroup);
+    computePass.dispatchWorkgroups(1);
+    computePass.end();
+
+    const renderPass = encoder.beginRenderPass({
       colorAttachments: [
         {
           view: context.getCurrentTexture().createView(),
@@ -118,11 +130,10 @@ async function main() {
         },
       ],
     });
-
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3);
-    pass.end();
+    renderPass.setPipeline(renderPipeline);
+    renderPass.setBindGroup(0, renderBindGroup);
+    renderPass.draw(3);
+    renderPass.end();
 
     device.queue.submit([encoder.finish()]);
     requestAnimationFrame(frame);

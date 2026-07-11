@@ -58,7 +58,7 @@ glass container, with lighting, refraction, and glow.
 
 ## Phase 3 — Compute shaders
 
-- [ ] **8. Physics moves to the GPU** — blob positions/velocities live in a
+- [x] **8. Physics moves to the GPU** — blob positions/velocities live in a
   storage buffer, updated by a compute shader instead of JS.
   *Teaches:* compute pipelines, workgroups, storage buffers, the compute →
   render handoff (GPU talking to itself).
