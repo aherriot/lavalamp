@@ -1,5 +1,10 @@
-const PHYSICS_BLOB_COUNT = 3u;
-const LIGHT_POS = vec3f(2.0, 3.0, 2.0);
+// Substituted by JS before shader creation (device.createShaderModule),
+// since WGSL array sizes and @workgroup_size must be known at shader
+// compile time -- a GUI-driven "blob count" slider can't just be a
+// uniform like everything else here. Changing it means rebuilding the
+// shader module (and every pipeline/bind group that references it)
+// from scratch with the new count baked in.
+const PHYSICS_BLOB_COUNT = __BLOB_COUNT__u;
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -12,6 +17,17 @@ struct SimParams {
   resolution: vec2f,
   cameraAzimuth: f32,
   cameraElevation: f32,
+  maxSteps: f32,
+  hitEpsilon: f32,
+  // xyz = light position, w = bloom brightness threshold. Reusing the
+  // otherwise-unused .w channel of each vec4 below instead of growing
+  // the struct further with more scalars (which would need careful
+  // re-padding) -- an intentional, slightly unconventional packing
+  // choice, called out here so it doesn't look like a mistake.
+  lightPos: vec4f,
+  coolColor: vec4f, // rgb = lava gradient cool stop, w = bloom intensity
+  warmColor: vec4f, // rgb = lava gradient warm stop, w unused
+  hotColor: vec4f, // rgb = lava gradient hot stop, w unused
 };
 
 struct Blob {
@@ -63,15 +79,57 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
   // move faster) that reads as jittery instead of calm.
   let heat = noise2D(vec2f(fi * 5.0, params.time * 0.08)) * 2.0 - 1.0;
 
-  // A gentle spring pulling back toward the vertical center. Unlike a
-  // constant gravity term, this is proportional to displacement -- the
-  // further a blob drifts from the middle, the harder it's pulled
-  // back -- so blobs settle into hovering near center instead of
-  // drifting to a wall and waiting to bounce off it.
-  let restoreStrength = 0.4;
-  let heatStrength = 0.6;
-  var ay = (0.0 - b.pos.y) * restoreStrength + heat * heatStrength;
+  // The spring's target height sits at the bottom by default and only
+  // rises once heat climbs above riseThreshold -- a real lava lamp's
+  // wax needs to sit near the bulb and warm up for a while before it's
+  // buoyant enough to rise, then cools and sinks back once away from
+  // the heat. Since heat is noise centered around 0, it spends most of
+  // its time below riseThreshold, so targetY spends most of its time
+  // at the bottom too, with shorter, less frequent excursions to the
+  // top -- asymmetric, unlike the old symmetric +-heat mapping which
+  // gave top and bottom equal billing. smoothstep (rather than a hard
+  // cutoff) keeps the transition itself smooth once heat does cross
+  // the threshold. The upper bound is deliberately much lower than
+  // heat's theoretical max of 1.0: this value noise rarely swings all
+  // the way to its extremes (this value noise clusters toward the
+  // middle), so a wide 0.35..1.0 range meant targetT almost
+  // never fully saturated and blobs only ever rose partway. Narrowing
+  // it to 0.35..0.55 means a realistically-achievable heat excursion
+  // is enough to send the target all the way to the top.
+  let restoreStrength = 0.22;
+  let riseThreshold = 0.25;
+  let targetT = smoothstep(riseThreshold, 0.55, heat);
+  // Bottom target is much lower than the top one (asymmetric on
+  // purpose) so resting blobs settle down near the base of the glass,
+  // not stop halfway down the container.
+  let targetY = mix(-1.8, 1.5, targetT);
+  var ay = (targetY - b.pos.y) * restoreStrength;
   var ax = 0.0;
+
+  // Soft wall repulsion: an actual force pushing blobs away from the
+  // container walls, growing smoothly (quadratically) the closer they
+  // get, rather than relying only on the hard clamp-and-bounce at the
+  // very end of this function. That clamp only ever *corrects* a
+  // position after the fact, once a blob has already reached the
+  // boundary; this instead discourages it from getting that close in
+  // the first place, so walls are actually felt as resistance during
+  // the approach.
+  let boundX = 0.65;
+  // Raised from 1.35 so the lower target (-1.8 above) has room to
+  // actually be reached instead of getting clamped well short of it;
+  // still safely inside the glass capsule's rounded-cap tip at ~2.25.
+  let boundY = 2.0;
+  let wallMarginX = boundX * 0.7;
+  let wallMarginY = boundY * 0.7;
+  let wallStrength = 8.0;
+  if (abs(b.pos.x) > wallMarginX) {
+    let excess = abs(b.pos.x) - wallMarginX;
+    ax -= sign(b.pos.x) * excess * excess * wallStrength;
+  }
+  if (abs(b.pos.y) > wallMarginY) {
+    let excess = abs(b.pos.y) - wallMarginY;
+    ay -= sign(b.pos.y) * excess * excess * wallStrength;
+  }
 
   // Mild repulsion so blobs don't sit directly on top of each other.
   for (var j = 0u; j < PHYSICS_BLOB_COUNT; j++) {
@@ -100,9 +158,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
   b.pos += b.vel * params.dt;
 
-  // Keep blobs inside a rough container, losing a bit of energy on bounce.
-  let boundX = 0.42;
-  let boundY = 1.0;
+  // Hard clamp as a last-resort safety net -- the soft wall repulsion
+  // above should normally keep blobs from ever reaching this, but
+  // velocity can still carry one past it in a single frame under
+  // extreme values. boundX/boundY are declared earlier in this
+  // function now, shared with the repulsion force above.
   if (abs(b.pos.x) > boundX) {
     b.pos.x = clamp(b.pos.x, -boundX, boundX);
     b.vel.x *= -0.4;
@@ -115,8 +175,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
   blobsRW[i] = b;
 }
 
-// ---- Render stage. Steps 10-11 built up 3D camera + raymarching from
-// scratch; Step 13 reconnects the compute-simulated blobs above. ----
+// ---- Render stage: 3D camera + raymarching, reading blob positions
+// from the same storage buffer the compute stage above writes. ----
 
 @group(0) @binding(1) var<storage, read> blobsRO: array<Blob>;
 
@@ -134,42 +194,84 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
-// Signed distance to a sphere: the 3D counterpart of Step 5's
-// sdCircle, same idea -- negative inside, zero on the surface,
+// Signed distance to a sphere: negative inside, zero on the surface,
 // positive outside.
 fn sdSphere(p: vec3f, radius: f32) -> f32 {
   return length(p) - radius;
 }
 
-// Smooth minimum: identical to Step 6's 2D version -- smin operates
-// on plain scalar distances, so it doesn't care whether those
-// distances came from a 2D or 3D SDF. Blending multiple sdSphere
-// calls with this is exactly what makes them merge into lava blobs
+// Smooth minimum: like min(a, b), but blends smoothly between the two
+// instead of switching abruptly. smin operates on plain scalar
+// distances, so it doesn't care whether those distances came from a
+// 2D or 3D SDF. Blending multiple sdSphere calls with this is exactly
+// what makes them merge into lava blobs
 // instead of just overlapping.
 fn smin(a: f32, b: f32, k: f32) -> f32 {
   let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-// The three blobs' X/Y positions now come straight from the compute
-// shader's storage buffer -- the exact same buoyancy/repulsion
-// simulation from Step 9, just read into a 3D scene instead of a 2D
-// one. The simulation itself is still only 2D (it never touches a Z
-// axis), so each blob gets a fixed Z offset here purely to spread
-// them out in depth; X and Y are simulated, Z is not.
-fn sceneSDF(p: vec3f) -> f32 {
-  var zOffsets = array<f32, 3>(0.0, 0.35, -0.5);
-  var radii = array<f32, 3>(0.4, 0.3, 0.35);
+// Signed distance to a capsule (a cylinder with hemisphere caps): the
+// lamp's glass body. `a`/`b` are the two endpoints of the cylinder's
+// central axis, `r` is its radius. Declared here (ahead of sceneSDF,
+// its first caller below) rather than down with the rest of the glass
+// code, since sceneSDF now needs it too.
+fn sdCapsule(p: vec3f, a: vec3f, b: vec3f, r: f32) -> f32 {
+  let pa = p - a;
+  let ba = b - a;
+  let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h) - r;
+}
 
+fn sdGlass(p: vec3f) -> f32 {
+  return sdCapsule(p, vec3f(0.0, -1.3, 0.0), vec3f(0.0, 1.3, 0.0), 0.95);
+}
+
+// Each blob's X/Y position comes from the compute shader's
+// buoyancy/repulsion simulation in the storage buffer. The simulation
+// itself is only 2D (it never touches a Z axis), so each blob gets a
+// procedural Z offset here purely to spread them out in depth; X and
+// Y are simulated, Z is not.
+fn sceneSDF(p: vec3f) -> f32 {
   let k = 0.4;
   var d = 1e5;
   for (var i = 0u; i < PHYSICS_BLOB_COUNT; i++) {
     let simPos = blobsRO[i].pos;
-    let blobPos = vec3f(simPos.x, simPos.y, zOffsets[i]);
-    let bd = sdSphere(p - blobPos, radii[i]);
+    let fi = f32(i);
+
+    // Spread blobs evenly across Z, centered on 0, regardless of how
+    // many there are -- formula-based since PHYSICS_BLOB_COUNT can
+    // change at runtime (via a GUI-triggered shader rebuild). Spacing
+    // is capped so the *total* spread never exceeds ~1.3 units: at up
+    // to 7 blobs this is a fixed 0.22 spacing, but beyond that it
+    // shrinks automatically -- without this, a high blob count (up to
+    // 24) would push outer blobs' Z far past the
+    // glass's ~0.95 radius, clipping them away entirely via sceneSDF's
+    // glass intersection and making them invisible.
+    let zSpacing = min(0.22, 1.3 / max(f32(PHYSICS_BLOB_COUNT) - 1.0, 1.0));
+    let zOffset = (fi - f32(PHYSICS_BLOB_COUNT - 1u) * 0.5) * zSpacing;
+    // Base radius multiplier: 0.75x (halved from the original 1.5x),
+    // then bumped up another 25% to 0.9375x. Two overlapping sine
+    // terms at different frequencies/phases give more size variation
+    // than a single sine and are less likely to visibly repeat across
+    // many blobs than one sine alone.
+    let radius = 1.2 * (0.28 + 0.14 * sin(fi * 1.7) + 0.06 * sin(fi * 4.3 + 1.0));
+
+    let blobPos = vec3f(simPos.x, simPos.y, zOffset);
+    let bd = sdSphere(p - blobPos, radius);
     d = smin(d, bd, k);
   }
-  return d;
+
+  // CSG intersection with the glass interior (max of two SDFs = the
+  // region inside both). Without this, a blob whose center drifts
+  // near the wall pokes its far side outside the glass -- and since
+  // the wax and glass are marched as two totally independent rays,
+  // whichever surface happens to be hit first "wins" with a flat,
+  // unnatural-looking cutoff right at the glass boundary. Intersecting
+  // here instead makes the wax geometry itself bend and flatten
+  // against the inside of the glass, the way real wax actually
+  // deforms against a container wall.
+  return max(d, sdGlass(p));
 }
 
 // Surface normal via the SDF's gradient: nudge p a tiny amount along
@@ -194,10 +296,10 @@ fn estimateNormal(p: vec3f) -> vec3f {
 // no fixed step size needed.
 fn raymarch(ro: vec3f, rd: vec3f) -> f32 {
   var t = 0.0;
-  for (var i = 0; i < 100; i++) {
+  for (var i = 0; i < i32(params.maxSteps); i++) {
     let p = ro + rd * t;
     let d = sceneSDF(p);
-    if (d < 0.001) {
+    if (d < params.hitEpsilon) {
       return t;
     }
     t += d;
@@ -215,22 +317,19 @@ fn raymarch(ro: vec3f, rd: vec3f) -> f32 {
 // cheap way to get a 3-stop gradient without a texture lookup.
 fn lavaColor(height: f32) -> vec3f {
   let t = clamp((height + 1.0) / 2.0, 0.0, 1.0);
-  let cool = vec3f(0.6, 0.05, 0.05);
-  let warm = vec3f(1.0, 0.55, 0.1);
-  let hot = vec3f(1.0, 0.9, 0.5);
   if (t < 0.5) {
-    return mix(cool, warm, t * 2.0);
+    return mix(params.coolColor.rgb, params.warmColor.rgb, t * 2.0);
   }
-  return mix(warm, hot, (t - 0.5) * 2.0);
+  return mix(params.warmColor.rgb, params.hotColor.rgb, (t - 0.5) * 2.0);
 }
 
-// The wax's full ambient + diffuse + specular + rim shading from
-// Step 14, now a standalone function so both "hit wax directly" and
-// "hit wax seen through the glass" can share it.
+// The wax's full ambient + diffuse + specular + rim shading, as a
+// standalone function so both "hit wax directly" and "hit wax seen
+// through the glass" can share it.
 fn shadeWax(hitPoint: vec3f, camPos: vec3f) -> vec3f {
   let normal = estimateNormal(hitPoint);
 
-  let lightDir = normalize(LIGHT_POS - hitPoint);
+  let lightDir = normalize(params.lightPos.xyz - hitPoint);
   let viewDir = normalize(camPos - hitPoint);
 
   let diffuse = max(dot(normal, lightDir), 0.0);
@@ -259,20 +358,6 @@ fn skyColor(rd: vec3f) -> vec3f {
   return mix(vec3f(0.05, 0.05, 0.1), vec3f(0.25, 0.28, 0.4), skyT);
 }
 
-// Signed distance to a capsule (a cylinder with hemisphere caps): the
-// lamp's glass body. `a`/`b` are the two endpoints of the cylinder's
-// central axis, `r` is its radius.
-fn sdCapsule(p: vec3f, a: vec3f, b: vec3f, r: f32) -> f32 {
-  let pa = p - a;
-  let ba = b - a;
-  let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  return length(pa - ba * h) - r;
-}
-
-fn sdGlass(p: vec3f) -> f32 {
-  return sdCapsule(p, vec3f(0.0, -1.3, 0.0), vec3f(0.0, 1.3, 0.0), 0.95);
-}
-
 fn estimateGlassNormal(p: vec3f) -> vec3f {
   let e = 0.001;
   return normalize(vec3f(
@@ -288,10 +373,10 @@ fn estimateGlassNormal(p: vec3f) -> vec3f {
 // duplication in exchange for staying simple to read.
 fn raymarchGlass(ro: vec3f, rd: vec3f) -> f32 {
   var t = 0.0;
-  for (var i = 0; i < 100; i++) {
+  for (var i = 0; i < i32(params.maxSteps); i++) {
     let p = ro + rd * t;
     let d = sdGlass(p);
-    if (d < 0.001) {
+    if (d < params.hitEpsilon) {
       return t;
     }
     t += d;
@@ -302,16 +387,57 @@ fn raymarchGlass(ro: vec3f, rd: vec3f) -> f32 {
   return -1.0;
 }
 
-// Signed distance to a capped cylinder (flat top/bottom, unlike the
-// rounded-cap capsule): a solid disc-shaped lamp base sitting just
-// beneath the glass. `h` is the half-height, `r` the radius.
-fn sdCappedCylinder(p: vec3f, h: f32, r: f32) -> f32 {
-  let d = abs(vec2f(length(p.xz), p.y)) - vec2f(r, h);
-  return min(max(d.x, d.y), 0.0) + length(max(d, vec2f(0.0)));
+// Signed distance to a capped cone (truncated cone / frustum) aligned
+// on the Y axis, spanning local y in [-h, h]: radius r1 at the bottom
+// (y=-h), r2 at the top (y=+h). Standard formula (Inigo Quilez's
+// distance-function reference); WGSL has no C-style ternary, so the
+// two conditional picks below use select(falseValue, trueValue, cond).
+fn sdCappedCone(p: vec3f, h: f32, r1: f32, r2: f32) -> f32 {
+  let q = vec2f(length(p.xz), p.y);
+  let k1 = vec2f(r2, h);
+  let k2 = vec2f(r2 - r1, 2.0 * h);
+  let caX = q.x - min(q.x, select(r2, r1, q.y < 0.0));
+  let ca = vec2f(caX, abs(q.y) - h);
+  let t = clamp(dot(k1 - q, k2) / dot(k2, k2), 0.0, 1.0);
+  let cb = q - k1 + k2 * t;
+  let s = select(1.0, -1.0, cb.x < 0.0 && ca.y < 0.0);
+  return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
 }
 
+// The classic lava lamp base shape: two frustums joined at a narrow
+// waist -- wide where it meets the glass, pinching in, then flaring
+// back out to a wide flat foot. Built as a union (min) of two
+// sdCappedCone calls that share the same radius at the waist, so they
+// meet with no visible seam.
 fn sdBase(p: vec3f) -> f32 {
-  return sdCappedCylinder(p - vec3f(0.0, -2.3, 0.0), 0.55, 1.15);
+  let baseCenter = vec3f(0.0, -2.7, 0.0);
+  let p2 = p - baseCenter;
+
+  let waistRadius = 0.52;
+  let topRadius = 0.95;
+  let footRadius = 1.05;
+  let upperHalf = 0.6;
+  let lowerHalf = 0.6;
+
+  // Upper frustum: narrow at the waist (bottom), flares out to meet
+  // the glass at the top.
+  let dUpper = sdCappedCone(
+    p2 - vec3f(0.0, upperHalf, 0.0),
+    upperHalf,
+    waistRadius,
+    topRadius,
+  );
+
+  // Lower frustum: mirrored -- narrow at the waist (top), flares out
+  // to a wide flat foot at the bottom.
+  let dLower = sdCappedCone(
+    p2 - vec3f(0.0, -lowerHalf, 0.0),
+    lowerHalf,
+    footRadius,
+    waistRadius,
+  );
+
+  return min(dUpper, dLower);
 }
 
 fn estimateBaseNormal(p: vec3f) -> vec3f {
@@ -325,10 +451,10 @@ fn estimateBaseNormal(p: vec3f) -> vec3f {
 
 fn raymarchBase(ro: vec3f, rd: vec3f) -> f32 {
   var t = 0.0;
-  for (var i = 0; i < 100; i++) {
+  for (var i = 0; i < i32(params.maxSteps); i++) {
     let p = ro + rd * t;
     let d = sdBase(p);
-    if (d < 0.001) {
+    if (d < params.hitEpsilon) {
       return t;
     }
     t += d;
@@ -344,17 +470,43 @@ fn raymarchBase(ro: vec3f, rd: vec3f) -> f32 {
 // shading as shadeWax, minus the rim light and lava color ramp.
 fn shadeBase(hitPoint: vec3f, camPos: vec3f) -> vec3f {
   let normal = estimateBaseNormal(hitPoint);
-  let lightDir = normalize(LIGHT_POS - hitPoint);
+  let lightDir = normalize(params.lightPos.xyz - hitPoint);
   let viewDir = normalize(camPos - hitPoint);
 
   let diffuse = max(dot(normal, lightDir), 0.0);
   let halfVec = normalize(lightDir + viewDir);
-  let specular = pow(max(dot(normal, halfVec), 0.0), 60.0);
+  let ndoth = max(dot(normal, halfVec), 0.0);
+  // Two specular lobes layered together, the way a well-polished
+  // metal highlight actually looks: a broad, soft sheen (low exponent)
+  // giving the surface some general glow near the light, plus a much
+  // tighter, sharper core (high exponent) right where the reflection
+  // points exactly at the camera -- a single lobe alone is either
+  // "soft plastic" (low exponent) or "a barely-visible pinpoint" (high
+  // exponent with no broad companion); together they read as a crisp
+  // mirror-like glint sitting inside a gentler glow.
+  let specularBroad = pow(ndoth, 140.0);
+  let specularTight = pow(ndoth, 700.0);
 
-  let ambient = 0.08;
-  let metalColor = vec3f(0.12, 0.09, 0.07);
+  let ambient = 0.18;
+  // Neutral metallic grey (brushed aluminum/chrome) instead of the
+  // previous warm dark bronze, plus a brighter ambient term so it
+  // doesn't read as near-black in shadow.
+  let metalColor = vec3f(0.55, 0.56, 0.58);
   var color = metalColor * (ambient + diffuse * 0.8);
-  color += vec3f(1.0, 0.9, 0.7) * specular * 0.5;
+  color += vec3f(1.0, 1.0, 1.0) * specularBroad * 1.0;
+  color += vec3f(1.0, 1.0, 1.0) * specularTight * 2.5;
+
+  // Metallic fresnel rim: real metals reflect more strongly at
+  // grazing angles, same geometric idea as the glass's Fresnel term,
+  // but tinted by the metal's own color rather than staying neutral
+  // -- that color tint is exactly what visually
+  // distinguishes "shiny metal" from "shiny plastic/glass". This adds
+  // reflectivity across the whole silhouette edge, not just a single
+  // point highlight, which sells "shiny" far more than the specular
+  // glint alone.
+  let fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+  color += metalColor * fresnel * 0.9;
+
   return color;
 }
 
@@ -362,9 +514,8 @@ fn shadeBase(hitPoint: vec3f, camPos: vec3f) -> vec3f {
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = params.resolution.x / params.resolution.y;
 
-  // Centered, aspect-corrected screen coordinate in roughly -1..1 --
-  // same idea as Step 5's `p`, just feeding a 3D camera instead of an
-  // SDF directly.
+  // Centered, aspect-corrected screen coordinate in roughly -1..1,
+  // feeding a 3D camera instead of an SDF directly.
   var screen = in.uv * 2.0 - 1.0;
   screen.x *= aspect;
 
@@ -458,7 +609,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // since the light is a point light, not part of the sky. This bright,
   // tight highlight is often the single strongest cue that a surface
   // is "glassy/wet" rather than a flat colored material.
-  let glassLightDir = normalize(LIGHT_POS - glassPoint);
+  let glassLightDir = normalize(params.lightPos.xyz - glassPoint);
   let glassHalfVec = normalize(glassLightDir + viewDir);
   let glassSpecular = pow(max(dot(glassNormal, glassHalfVec), 0.0), 200.0);
   finalColor += vec3f(1.0) * glassSpecular;
@@ -466,9 +617,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 }
 
 // ---- Bloom post-processing: two extra fullscreen passes reusing the
-// same vs_main fullscreen-triangle trick from Step 4. Pass 1 (fs_main
-// above) rendered the` actual scene into an offscreen texture instead
-// of the canvas; these two passes read that texture back as input. ----
+// same vs_main fullscreen-triangle trick. fs_main above rendered the
+// actual scene into an offscreen texture instead of the canvas; these
+// two passes read that texture back as input. ----
 
 @group(0) @binding(2) var texSampler: sampler;
 @group(0) @binding(3) var sceneTex: texture_2d<f32>;
@@ -505,8 +656,9 @@ fn bloomExtract_fs(in: VertexOutput) -> @location(0) vec4f {
 
     // Threshold: only pixels already close to full brightness
     // contribute to the glow, otherwise the whole image would bloom.
+    // Reused from params.lightPos.w -- see the SimParams struct note.
     let brightness = max(c.r, max(c.g, c.b));
-    let excess = max(brightness - 0.6, 0.0);
+    let excess = max(brightness - params.lightPos.w, 0.0);
     sum += c * (excess / max(brightness, 0.0001));
   }
 
@@ -526,5 +678,6 @@ fn composite_fs(in: VertexOutput) -> @location(0) vec4f {
   let sampleUV = vec2f(in.uv.x, 1.0 - in.uv.y);
   let scene = textureSample(sceneTex, texSampler, sampleUV).rgb;
   let bloom = textureSample(bloomTex, texSampler, sampleUV).rgb;
-  return vec4f(scene + bloom * 1.2, 1.0);
+  // Intensity reused from params.coolColor.w -- see SimParams struct note.
+  return vec4f(scene + bloom * params.coolColor.w, 1.0);
 }

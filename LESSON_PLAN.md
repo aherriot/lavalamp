@@ -109,7 +109,7 @@ glass container, with lighting, refraction, and glow.
 - [x] **17. Orbit camera** — mouse-drag camera control.
   *Teaches:* basic interaction handling, spherical/quaternion camera math.
 
-- [ ] **18. Polish & tuning** — tweak raymarch step count/epsilon for perf,
+- [x] **18. Polish & tuning** — tweak raymarch step count/epsilon for perf,
   add a live GUI (tweakpane) for blob count, colors, speed, light position.
   *Teaches:* the actual perf/quality tradeoffs raymarching lives and dies
   by, plus a nicety for demoing.
