@@ -101,7 +101,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* SDF booleans, cheap-but-convincing refraction/reflection
   tricks.
 
-- [ ] **16. Color & glow** — height/heat-driven lava gradient, bloom via a
+- [x] **16. Color & glow** — height/heat-driven lava gradient, bloom via a
   render-to-texture + blur + additive-composite pass.
   *Teaches:* multi-pass rendering, the simplest real post-processing
   pipeline.

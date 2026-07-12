@@ -207,6 +207,22 @@ fn raymarch(ro: vec3f, rd: vec3f) -> f32 {
   return -1.0; // no surface found within range: a miss
 }
 
+// Maps a blob surface's world-space height to a "cool base -> hot tip"
+// lava color ramp, mimicking how real heated wax looks brighter/more
+// yellow near the top of its rise and darker red lower down. Two
+// linear mixes chained together (cool->warm, then warm->hot) is a
+// cheap way to get a 3-stop gradient without a texture lookup.
+fn lavaColor(height: f32) -> vec3f {
+  let t = clamp((height + 1.0) / 2.0, 0.0, 1.0);
+  let cool = vec3f(0.6, 0.05, 0.05);
+  let warm = vec3f(1.0, 0.55, 0.1);
+  let hot = vec3f(1.0, 0.9, 0.5);
+  if (t < 0.5) {
+    return mix(cool, warm, t * 2.0);
+  }
+  return mix(warm, hot, (t - 0.5) * 2.0);
+}
+
 // The wax's full ambient + diffuse + specular + rim shading from
 // Step 14, now a standalone function so both "hit wax directly" and
 // "hit wax seen through the glass" can share it.
@@ -225,7 +241,7 @@ fn shadeWax(hitPoint: vec3f, camPos: vec3f) -> vec3f {
   let rimAmount = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
 
   let ambient = 0.1;
-  let baseColor = vec3f(1.0, 0.35, 0.2);
+  let baseColor = lavaColor(hitPoint.y);
   let lightColor = vec3f(1.0, 0.95, 0.85);
   let rimColor = vec3f(1.0, 0.5, 0.3);
 
@@ -382,4 +398,68 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let glassSpecular = pow(max(dot(glassNormal, glassHalfVec), 0.0), 200.0);
   finalColor += vec3f(1.0) * glassSpecular;
   return vec4f(finalColor, 1.0);
+}
+
+// ---- Bloom post-processing: two extra fullscreen passes reusing the
+// same vs_main fullscreen-triangle trick from Step 4. Pass 1 (fs_main
+// above) rendered the` actual scene into an offscreen texture instead
+// of the canvas; these two passes read that texture back as input. ----
+
+@group(0) @binding(2) var texSampler: sampler;
+@group(0) @binding(3) var sceneTex: texture_2d<f32>;
+
+// Extracts only the bright parts of the scene (the glass specular
+// glint, wax highlights) and blurs them. Real bloom pipelines usually
+// separate "extract" and "blur" into their own passes (often several,
+// at shrinking resolutions) for a smoother glow; this folds both into
+// one pass with a single small blur kernel, trading some quality for
+// simplicity.
+@fragment
+fn bloomExtract_fs(in: VertexOutput) -> @location(0) vec4f {
+  let texel = 1.0 / params.resolution;
+  let radius = 3.0;
+
+  // vs_main's `uv` is y-up (uv.y = 1 at the top of the screen), but
+  // textureSample's v-coordinate is y-down (v = 0 is the top texel
+  // row). Rasterizing straight to the canvas (fs_main) never notices
+  // this mismatch since nothing samples a texture there -- but any
+  // pass that samples a texture written by a previous pass needs the
+  // v flipped to actually land on the intended pixel.
+  let sampleUV = vec2f(in.uv.x, 1.0 - in.uv.y);
+
+  var offsets = array<vec2f, 9>(
+    vec2f(-1.0, -1.0), vec2f(0.0, -1.0), vec2f(1.0, -1.0),
+    vec2f(-1.0, 0.0), vec2f(0.0, 0.0), vec2f(1.0, 0.0),
+    vec2f(-1.0, 1.0), vec2f(0.0, 1.0), vec2f(1.0, 1.0),
+  );
+
+  var sum = vec3f(0.0);
+  for (var i = 0; i < 9; i++) {
+    let uv = sampleUV + offsets[i] * texel * radius;
+    let c = textureSample(sceneTex, texSampler, uv).rgb;
+
+    // Threshold: only pixels already close to full brightness
+    // contribute to the glow, otherwise the whole image would bloom.
+    let brightness = max(c.r, max(c.g, c.b));
+    let excess = max(brightness - 0.6, 0.0);
+    sum += c * (excess / max(brightness, 0.0001));
+  }
+
+  return vec4f(sum / 9.0, 1.0);
+}
+
+@group(0) @binding(4) var bloomTex: texture_2d<f32>;
+
+// Adds the blurred bright-pass on top of the original scene. This
+// additive combination is what makes bright areas visibly "glow" --
+// spilling light into the darker pixels around them -- rather than
+// just being clipped at pure white.
+@fragment
+fn composite_fs(in: VertexOutput) -> @location(0) vec4f {
+  // Same y-up-vs-y-down mismatch as bloomExtract_fs, applied to both
+  // texture reads.
+  let sampleUV = vec2f(in.uv.x, 1.0 - in.uv.y);
+  let scene = textureSample(sceneTex, texSampler, sampleUV).rgb;
+  let bloom = textureSample(bloomTex, texSampler, sampleUV).rgb;
+  return vec4f(scene + bloom * 1.2, 1.0);
 }

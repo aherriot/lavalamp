@@ -77,6 +77,37 @@ async function main() {
     },
   });
 
+  // Bloom: two more fullscreen passes reusing vs_main. Both read a
+  // previous pass's output back as a texture, so unlike renderPipeline
+  // (which renders straight to the canvas), this pass renders to an
+  // offscreen texture that gets sampled afterward.
+  const bloomExtractPipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: shaderModule, entryPoint: "vs_main" },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "bloomExtract_fs",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+
+  const compositePipeline = device.createRenderPipeline({
+    layout: "auto",
+    vertex: { module: shaderModule, entryPoint: "vs_main" },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "composite_fs",
+      targets: [{ format }],
+    },
+    primitive: { topology: "triangle-list" },
+  });
+
+  const sampler = device.createSampler({
+    magFilter: "linear",
+    minFilter: "linear",
+  });
+
   // Two separate bind groups over the *same* buffers: the compute
   // shader declares the storage buffer read_write, the fragment shader
   // declares it read-only, so each pipeline needs its own layout.
@@ -98,10 +129,64 @@ async function main() {
     ],
   });
 
+  // Offscreen textures the scene renders into, and the bright-pass
+  // blur renders into, instead of straight to the canvas. Recreated
+  // whenever the canvas resizes, since a texture's size is fixed at
+  // creation time -- unlike the canvas itself, which webgpu.ts
+  // reconfigures in place on resize.
+  let sceneTexture: GPUTexture | null = null;
+  let bloomTexture: GPUTexture | null = null;
+  let bloomExtractBindGroup: GPUBindGroup | null = null;
+  let compositeBindGroup: GPUBindGroup | null = null;
+  let offscreenWidth = 0;
+  let offscreenHeight = 0;
+
+  function ensureOffscreenTargets() {
+    if (canvas.width === offscreenWidth && canvas.height === offscreenHeight) {
+      return;
+    }
+    offscreenWidth = canvas.width;
+    offscreenHeight = canvas.height;
+
+    sceneTexture?.destroy();
+    bloomTexture?.destroy();
+
+    sceneTexture = device.createTexture({
+      size: [offscreenWidth, offscreenHeight],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    bloomTexture = device.createTexture({
+      size: [offscreenWidth, offscreenHeight],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    bloomExtractBindGroup = device.createBindGroup({
+      layout: bloomExtractPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuffer } },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: sceneTexture.createView() },
+      ],
+    });
+
+    compositeBindGroup = device.createBindGroup({
+      layout: compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: sceneTexture.createView() },
+        { binding: 4, resource: bloomTexture.createView() },
+      ],
+    });
+  }
+
   const uniformData = new Float32Array(6);
   let lastTimeMs = 0;
 
   function frame(timeMs: number) {
+    ensureOffscreenTargets();
+
     const t = timeMs * 0.001;
     const dt = Math.min((timeMs - lastTimeMs) * 0.001, 0.05);
     lastTimeMs = timeMs;
@@ -122,20 +207,55 @@ async function main() {
     computePass.dispatchWorkgroups(1);
     computePass.end();
 
-    const renderPass = encoder.beginRenderPass({
+    // Pass 1: render the actual scene into an offscreen texture
+    // instead of the canvas.
+    const scenePass = encoder.beginRenderPass({
       colorAttachments: [
         {
-          view: context.getCurrentTexture().createView(),
+          view: sceneTexture!.createView(),
           clearValue: { r: 0.05, g: 0.05, b: 0.08, a: 1 },
           loadOp: "clear",
           storeOp: "store",
         },
       ],
     });
-    renderPass.setPipeline(renderPipeline);
-    renderPass.setBindGroup(0, renderBindGroup);
-    renderPass.draw(3);
-    renderPass.end();
+    scenePass.setPipeline(renderPipeline);
+    scenePass.setBindGroup(0, renderBindGroup);
+    scenePass.draw(3);
+    scenePass.end();
+
+    // Pass 2: extract + blur the bright parts of that scene texture
+    // into a second offscreen texture.
+    const bloomPass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: bloomTexture!.createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    bloomPass.setPipeline(bloomExtractPipeline);
+    bloomPass.setBindGroup(0, bloomExtractBindGroup!);
+    bloomPass.draw(3);
+    bloomPass.end();
+
+    // Pass 3: composite scene + bloom together onto the actual canvas.
+    const compositePass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: context.getCurrentTexture().createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    compositePass.setPipeline(compositePipeline);
+    compositePass.setBindGroup(0, compositeBindGroup!);
+    compositePass.draw(3);
+    compositePass.end();
 
     device.queue.submit([encoder.finish()]);
     requestAnimationFrame(frame);
