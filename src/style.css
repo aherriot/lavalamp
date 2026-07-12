@@ -10,4 +10,8 @@ html, body {
   display: block;
   width: 100vw;
   height: 100vh;
+  /* Without this, touch-dragging on mobile gets hijacked by the
+     browser's native scroll/zoom gestures before our own pointer
+     handlers see a clean, uninterrupted drag. */
+  touch-action: none;
 }

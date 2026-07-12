@@ -11,8 +11,9 @@ async function main() {
   const shaderModule = device.createShaderModule({ code: sceneShader });
 
   // layout: time: f32 (0), dt: f32 (4), resolution: vec2f (8),
-  // mouse: vec2f (16) -> 24 bytes. No arrays here, so none of the
-  // uniform-array 16-byte-stride padding from Step 7 applies.
+  // cameraAzimuth: f32 (16), cameraElevation: f32 (20) -> 24 bytes.
+  // No arrays here, so none of the uniform-array 16-byte-stride
+  // padding from Step 7 applies.
   const uniformBuffer = device.createBuffer({
     size: 24,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -46,12 +47,39 @@ async function main() {
     ]),
   );
 
-  const mouseNDC = { x: 0, y: 0 };
-  canvas.addEventListener("pointermove", (event) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseNDC.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    mouseNDC.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
+  // Orbit camera state: azimuth/elevation persist across drags, so
+  // releasing the mouse mid-drag keeps auto-rotating smoothly from
+  // wherever you left it rather than snapping back.
+  const orbit = { azimuth: 0, elevation: 0.3, dragging: false };
+  let lastPointer = { x: 0, y: 0 };
+
+  const ORBIT_SENSITIVITY = 0.008;
+  const ELEVATION_LIMIT = 1.4; // radians; keeps the camera short of the poles
+
+  canvas.addEventListener("pointerdown", (event) => {
+    orbit.dragging = true;
+    lastPointer = { x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
   });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!orbit.dragging) {
+      return;
+    }
+    const dx = event.clientX - lastPointer.x;
+    const dy = event.clientY - lastPointer.y;
+    lastPointer = { x: event.clientX, y: event.clientY };
+
+    orbit.azimuth -= dx * ORBIT_SENSITIVITY;
+    orbit.elevation = Math.max(
+      -ELEVATION_LIMIT,
+      Math.min(ELEVATION_LIMIT, orbit.elevation + dy * ORBIT_SENSITIVITY),
+    );
+  });
+  const stopDragging = () => {
+    orbit.dragging = false;
+  };
+  canvas.addEventListener("pointerup", stopDragging);
+  canvas.addEventListener("pointercancel", stopDragging);
 
   const computePipeline = device.createComputePipeline({
     layout: "auto",
@@ -191,12 +219,16 @@ async function main() {
     const dt = Math.min((timeMs - lastTimeMs) * 0.001, 0.05);
     lastTimeMs = timeMs;
 
+    if (!orbit.dragging) {
+      orbit.azimuth += 0.15 * dt;
+    }
+
     uniformData[0] = t;
     uniformData[1] = dt;
     uniformData[2] = canvas.width;
     uniformData[3] = canvas.height;
-    uniformData[4] = mouseNDC.x;
-    uniformData[5] = mouseNDC.y;
+    uniformData[4] = orbit.azimuth;
+    uniformData[5] = orbit.elevation;
     device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
     const encoder = device.createCommandEncoder();

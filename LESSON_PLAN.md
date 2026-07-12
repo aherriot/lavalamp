@@ -106,7 +106,7 @@ glass container, with lighting, refraction, and glow.
   *Teaches:* multi-pass rendering, the simplest real post-processing
   pipeline.
 
-- [ ] **17. Orbit camera** — mouse-drag camera control.
+- [x] **17. Orbit camera** — mouse-drag camera control.
   *Teaches:* basic interaction handling, spherical/quaternion camera math.
 
 - [ ] **18. Polish & tuning** — tweak raymarch step count/epsilon for perf,

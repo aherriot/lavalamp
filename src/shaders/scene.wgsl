@@ -10,7 +10,8 @@ struct SimParams {
   time: f32,
   dt: f32,
   resolution: vec2f,
-  mouse: vec2f,
+  cameraAzimuth: f32,
+  cameraElevation: f32,
 };
 
 struct Blob {
@@ -301,6 +302,62 @@ fn raymarchGlass(ro: vec3f, rd: vec3f) -> f32 {
   return -1.0;
 }
 
+// Signed distance to a capped cylinder (flat top/bottom, unlike the
+// rounded-cap capsule): a solid disc-shaped lamp base sitting just
+// beneath the glass. `h` is the half-height, `r` the radius.
+fn sdCappedCylinder(p: vec3f, h: f32, r: f32) -> f32 {
+  let d = abs(vec2f(length(p.xz), p.y)) - vec2f(r, h);
+  return min(max(d.x, d.y), 0.0) + length(max(d, vec2f(0.0)));
+}
+
+fn sdBase(p: vec3f) -> f32 {
+  return sdCappedCylinder(p - vec3f(0.0, -2.3, 0.0), 0.55, 1.15);
+}
+
+fn estimateBaseNormal(p: vec3f) -> vec3f {
+  let e = 0.001;
+  return normalize(vec3f(
+    sdBase(p + vec3f(e, 0.0, 0.0)) - sdBase(p - vec3f(e, 0.0, 0.0)),
+    sdBase(p + vec3f(0.0, e, 0.0)) - sdBase(p - vec3f(0.0, e, 0.0)),
+    sdBase(p + vec3f(0.0, 0.0, e)) - sdBase(p - vec3f(0.0, 0.0, e)),
+  ));
+}
+
+fn raymarchBase(ro: vec3f, rd: vec3f) -> f32 {
+  var t = 0.0;
+  for (var i = 0; i < 100; i++) {
+    let p = ro + rd * t;
+    let d = sdBase(p);
+    if (d < 0.001) {
+      return t;
+    }
+    t += d;
+    if (t > 50.0) {
+      break;
+    }
+  }
+  return -1.0;
+}
+
+// Unlike the glass, the base is a plain opaque solid: no fresnel, no
+// refraction, just ambient + diffuse + specular -- the same shape of
+// shading as shadeWax, minus the rim light and lava color ramp.
+fn shadeBase(hitPoint: vec3f, camPos: vec3f) -> vec3f {
+  let normal = estimateBaseNormal(hitPoint);
+  let lightDir = normalize(LIGHT_POS - hitPoint);
+  let viewDir = normalize(camPos - hitPoint);
+
+  let diffuse = max(dot(normal, lightDir), 0.0);
+  let halfVec = normalize(lightDir + viewDir);
+  let specular = pow(max(dot(normal, halfVec), 0.0), 60.0);
+
+  let ambient = 0.08;
+  let metalColor = vec3f(0.12, 0.09, 0.07);
+  var color = metalColor * (ambient + diffuse * 0.8);
+  color += vec3f(1.0, 0.9, 0.7) * specular * 0.5;
+  return color;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   let aspect = params.resolution.x / params.resolution.y;
@@ -311,16 +368,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   var screen = in.uv * 2.0 - 1.0;
   screen.x *= aspect;
 
-  // A slowly orbiting camera looking at the origin. Orbiting (rather
-  // than a fixed camera) is a deliberate sanity check: if the ray
-  // directions are really 3D perspective and not some flat reskin,
-  // the resulting image will visibly rotate in a way a 2D effect
-  // couldn't fake.
+  // Orbit camera, driven by JS-tracked azimuth/elevation (mouse-drag
+  // control, auto-rotating slowly while idle) rather than time alone.
+  // Standard spherical-to-Cartesian conversion: azimuth sweeps around
+  // the vertical axis, elevation tilts up/down toward the poles.
   let camDist = 6.0;
   let camPos = vec3f(
-    sin(params.time * 0.3) * camDist,
-    1.0,
-    cos(params.time * 0.3) * camDist,
+    camDist * cos(params.cameraElevation) * sin(params.cameraAzimuth),
+    camDist * sin(params.cameraElevation),
+    camDist * cos(params.cameraElevation) * cos(params.cameraAzimuth),
   );
   let lookTarget = vec3f(0.0, 0.0, 0.0);
   let worldUp = vec3f(0.0, 1.0, 0.0);
@@ -345,6 +401,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
   // always reaches the glass shell first -- meaning tGlass, if it
   // hits, is always the correct "first surface" for this pixel.
   let tGlass = raymarchGlass(camPos, rayDir);
+
+  // The base is a separate, unrelated solid -- not inside the glass --
+  // so whichever of tBase/tGlass is closer determines what's actually
+  // visible first along this ray.
+  let tBase = raymarchBase(camPos, rayDir);
+  if (tBase >= 0.0 && (tGlass < 0.0 || tBase < tGlass)) {
+    return vec4f(shadeBase(camPos + rayDir * tBase, camPos), 1.0);
+  }
+
   if (tGlass < 0.0) {
     return vec4f(skyColor(rayDir), 1.0);
   }
