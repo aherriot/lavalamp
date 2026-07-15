@@ -2,6 +2,8 @@
 
 A fully raymarched, GPU-simulated lava lamp, built from scratch in WebGPU + TypeScript with zero rendering libraries — no three.js, no engine, just raw `WGSL` shaders talking directly to the GPU.
 
+**[Live demo →](https://aherriot.github.io/lavalamp/)** — requires a [WebGPU-capable browser](https://caniuse.com/webgpu) (recent Chrome/Edge, Safari 18+, or Firefox with WebGPU enabled). No WebGPU? See the gif below instead.
+
 ![Lava lamp demo](docs/lavalamp.gif)
 
 ## What makes this interesting
