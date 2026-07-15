@@ -3,7 +3,7 @@ import { defineConfig, type Plugin } from "vite";
 import mkcert from "vite-plugin-mkcert";
 
 const HTTPS_PORT = 5173;
-const HTTP_PORT = 5172;
+const HTTP_PORT = 5174;
 
 // Vite's own dev server only speaks one protocol at a time, so plain
 // http requests just fail to connect once https is enabled. This spins
@@ -25,6 +25,7 @@ function httpToHttpsRedirect(): Plugin {
 }
 
 export default defineConfig({
+  base: process.env.GITHUB_ACTIONS ? "/lavalamp/" : "/",
   plugins: [mkcert(), httpToHttpsRedirect()],
   server: { port: HTTPS_PORT },
 });
